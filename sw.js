@@ -1,7 +1,11 @@
 // Service worker: keeps the app itself available offline.
 // Your food log is NOT stored here — it lives in the browser's storage (see js/store.js).
-// Bump VERSION whenever you change any app file so phones pick up the update.
-const VERSION = 'v1.1.0';
+//
+// Update strategy: when online, every app file is fetched fresh from GitHub
+// (bypassing the browser's short-term cache), so new versions show up on the next
+// launch. The saved copies are only used when you're offline or the network is very slow.
+// Keep VERSION in step with APP_VERSION in js/app.js.
+const VERSION = 'v1.2.0';
 const CACHE = 'calorie-tracker-' + VERSION;
 const APP_FILES = [
   './',
@@ -17,9 +21,18 @@ const APP_FILES = [
   './icons/apple-touch-icon.png',
   './vendor/zxing.min.js'
 ];
+const NETWORK_TIMEOUT_MS = 4000;
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(APP_FILES)).then(() => self.skipWaiting()));
+  event.waitUntil(
+    caches.open(CACHE)
+      .then((c) => Promise.all(APP_FILES.map((u) =>
+        fetch(new Request(u, { cache: 'reload' }))
+          .then((res) => (res.ok ? c.put(u, res) : null))
+          .catch(() => null) // one missing file must not block the update
+      )))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener('activate', (event) => {
@@ -30,29 +43,29 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+self.addEventListener('message', (event) => {
+  if (event.data === 'skipWaiting') self.skipWaiting();
+});
+
+function networkFirst(request, cacheKey) {
+  const fresh = new Request(request, { cache: 'no-cache' });
+  const network = fetch(fresh).then((res) => {
+    if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(cacheKey || request, copy)); }
+    return res;
+  });
+  const timeout = new Promise((resolve) => setTimeout(resolve, NETWORK_TIMEOUT_MS));
+  return Promise.race([network, timeout.then(() => caches.match(cacheKey || request))])
+    .then((res) => res || network)
+    .catch(() => caches.match(cacheKey || request, { ignoreSearch: true }));
+}
+
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   // Only handle our own files; food searches go straight to the network.
   if (event.request.method !== 'GET' || url.origin !== self.location.origin) return;
-
-  // Network first for the page itself (so updates arrive), cache as fallback offline.
   if (event.request.mode === 'navigate') {
-    event.respondWith(
-      fetch(event.request)
-        .then((res) => { const copy = res.clone(); caches.open(CACHE).then((c) => c.put('./index.html', copy)); return res; })
-        .catch(() => caches.match('./index.html'))
-    );
-    return;
+    event.respondWith(networkFirst(event.request, './index.html'));
+  } else {
+    event.respondWith(networkFirst(event.request));
   }
-
-  // Cache first for app files, refreshed in the background.
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const network = fetch(event.request).then((res) => {
-        if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(event.request, copy)); }
-        return res;
-      }).catch(() => cached);
-      return cached || network;
-    })
-  );
 });
