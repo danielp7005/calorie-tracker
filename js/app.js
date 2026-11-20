@@ -7,7 +7,7 @@ import { parseFoodText, rankMatches, matchesAll, resolveAmount } from './voice.j
 
 // ---------------------------------------------------------------- setup
 
-const APP_VERSION = '1.3.0'; // keep in step with VERSION in sw.js
+const APP_VERSION = '1.3.1'; // keep in step with VERSION in sw.js
 let S = store.load();
 const MEALS = ['Breakfast', 'Lunch', 'Dinner', 'Snacks'];
 const view = document.getElementById('view');
@@ -1306,6 +1306,12 @@ document.addEventListener('visibilitychange', () => {
     render();
   }
 });
+
+// ---------------------------------------------------------------- no pinch zoom
+
+// iPhone Safari ignores "user-scalable=no" in some cases, so block its pinch gestures directly.
+['gesturestart', 'gesturechange', 'gestureend'].forEach((t) => document.addEventListener(t, (e) => e.preventDefault(), { passive: false }));
+document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
 
 // ---------------------------------------------------------------- start
 
