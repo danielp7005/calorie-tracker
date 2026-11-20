@@ -1,8 +1,9 @@
 import * as store from './store.js';
 import {
-  searchLocal, recentFoods, searchUSDA, lookupBarcode,
+  searchLocal, recentFoods, searchUSDA, fetchUSDAPortions, lookupBarcode,
   unitsFor, nutritionFor, describeAmount
 } from './foods.js';
+import { parseFoodText, rankMatches, matchesAll, resolveAmount } from './voice.js';
 
 // ---------------------------------------------------------------- setup
 
@@ -32,6 +33,7 @@ const I = {
   download: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>',
   upload: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 21V9M7 14l5-5 5 5M5 3h14"/></svg>',
   close: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  mic: '<svg aria-hidden="true" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>',
   share: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v13M7 8l5-5 5 5M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/></svg>'
 };
 
@@ -237,6 +239,7 @@ function renderAdd() {
         <span class="sr">Search foods</span>
         <input id="q" type="search" placeholder="Search foods" autocomplete="off" autocorrect="off" enterkeyhint="search" value="${esc(ui.q)}">
       </label>
+      <button class="icon-btn" data-action="voice" aria-label="Say what you ate" style="width:52px;height:52px;border-radius:16px;background:var(--accent);color:#fff">${I.mic}</button>
       <button class="icon-btn" data-action="scan" aria-label="Scan barcode" style="width:52px;height:52px;border-radius:16px;background:var(--ink);color:#fff">${I.barcode}</button>
     </div>
     <div id="results" style="display:flex;flex-direction:column;gap:16px"></div>
@@ -318,6 +321,7 @@ function renderResults() {
   if (!q) {
     const recents = recentFoods(S.foods);
     box.innerHTML = `
+      <button class="btn block" data-action="voice" style="min-height:56px">${I.mic} Say what you ate</button>
       <section class="card pad" style="display:flex;flex-direction:column;gap:12px" aria-label="Quick add">
         <h2 style="font-size:15px;font-weight:700">Quick add calories</h2>
         <form class="row" style="gap:10px" data-form="quick">
@@ -406,6 +410,7 @@ function openSheet(html, label) {
   return sheetRoot.querySelector('.sheet');
 }
 function closeSheet() {
+  stopListening();
   sheetRoot.innerHTML = '';
   document.body.style.overflow = '';
   if (sheetKeyHandler) document.removeEventListener('keydown', sheetKeyHandler);
@@ -438,13 +443,15 @@ function openServing(food, entry) {
   const sourceLine = {
     usda: 'USDA FoodData Central',
     off: 'Open Food Facts',
-    custom: 'Your custom food'
+    custom: 'Your custom food',
+    meal: 'Your saved meal'
   }[food.source] || '';
 
   const sheet = openSheet(`
     <div>
       <h2>${esc(food.name)}</h2>
       <p class="src">${esc([food.brand, sourceLine].filter(Boolean).join(' · '))}</p>
+      ${food.ingredients && food.ingredients.length ? `<p class="small muted" style="margin-top:6px;line-height:1.5">${esc(food.ingredients.join(' · '))}</p>` : ''}
     </div>
     <div class="grid2">
       <label class="stack">Amount
@@ -509,6 +516,303 @@ function openServing(food, entry) {
   if (forget) forget.addEventListener('click', () => {
     delete S.foods[food.id]; persist(); closeSheet(); renderResults(); toast('Removed from your foods');
   });
+}
+
+// USDA foods often arrive with nutrition per 100 g only. Before showing the serving
+// picker, look up real portions (e.g. "1 large (50 g)") once and remember them.
+function needsPortions(food) {
+  return food.source === 'usda' && !food.perServing && !(food.measures && food.measures.length) && !food.portionsChecked;
+}
+
+async function ensurePortions(food) {
+  if (!needsPortions(food) || !navigator.onLine) return food;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  let measures = [];
+  try {
+    measures = await fetchUSDAPortions(food, S.settings.usdaKey, ctrl.signal);
+  } catch (e) {
+    console.warn(e);
+  }
+  clearTimeout(timer);
+  const updated = { ...food, measures, portionsChecked: true };
+  ui.pool[food.id] = updated;
+  if (S.foods[food.id]) { S.foods[food.id] = { ...S.foods[food.id], measures, portionsChecked: true }; persist(); }
+  return S.foods[food.id] || updated;
+}
+
+async function pickFood(food) {
+  if (!needsPortions(food) || !navigator.onLine) { openServing(food); return; }
+  openSheet(`<h2>${esc(food.name)}</h2><div class="empty"><div class="spinner" aria-label="Loading serving sizes"></div><p style="margin-top:10px">Loading serving sizes…</p></div>`, food.name);
+  const updated = await ensurePortions(food);
+  if (!sheetRoot.firstChild) return; // closed while loading
+  openServing(updated);
+}
+
+// ---------------------------------------------------------------- voice / describe
+
+let recognition = null;
+
+function stopListening() {
+  if (recognition) { try { recognition.stop(); } catch (e) { /* ignore */ } }
+  recognition = null;
+}
+
+function openVoice(prefill = '') {
+  stopListening();
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const sheet = openSheet(`
+    <h2>Say what you ate</h2>
+    <p class="src" style="line-height:1.5">Name each food with an amount. For example: “two cups of spinach, half an avocado, six cherry tomatoes, an ounce of feta and two tablespoons of olive oil.”</p>
+    <label class="stack"><span class="sr">What you ate</span>
+      <textarea id="v-text" rows="5" placeholder="Tap the mic, or type here" style="width:100%;border:1.5px solid #D5DCD5;border-radius:14px;padding:12px 14px;font-size:16px;line-height:1.45;resize:vertical;background:#fff;outline-color:var(--accent)">${esc(prefill)}</textarea>
+    </label>
+    ${SR ? `<button class="btn secondary block" id="v-mic" type="button" aria-pressed="false">${I.mic} <span>Tap to speak</span></button>` : ''}
+    <p class="note" id="v-hint">${SR ? 'If the mic button doesn’t work, tap in the box and use the microphone key on your keyboard.' : 'Tap in the box and use the microphone key on your keyboard to dictate.'}</p>
+    ${mealSeg(ui.meal)}
+    <button class="btn block" id="v-go">Find foods</button>
+  `, 'Say what you ate');
+  const text = sheet.querySelector('#v-text');
+  bindMealSeg(sheet, (m) => { ui.meal = m; });
+  if (!prefill && !SR) setTimeout(() => text.focus(), 250);
+
+  const mic = sheet.querySelector('#v-mic');
+  if (mic && SR) {
+    mic.addEventListener('click', () => {
+      if (recognition) { stopListening(); return; }
+      const rec = new SR();
+      recognition = rec;
+      rec.lang = navigator.language || 'en-US';
+      rec.continuous = true;
+      rec.interimResults = true;
+      const base = text.value.trim() ? text.value.trim() + ', ' : '';
+      rec.onresult = (ev) => {
+        let said = '';
+        for (let i = 0; i < ev.results.length; i++) said += ev.results[i][0].transcript;
+        text.value = base + said.trim();
+      };
+      const setIdle = () => {
+        mic.setAttribute('aria-pressed', 'false');
+        mic.querySelector('span').textContent = 'Tap to speak';
+        if (recognition === rec) recognition = null;
+      };
+      rec.onend = setIdle;
+      rec.onerror = (ev) => {
+        setIdle();
+        if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+          sheet.querySelector('#v-hint').textContent = 'Microphone access is off for this app. Tap in the box and use the microphone key on your keyboard instead.';
+        } else if (ev.error !== 'aborted' && ev.error !== 'no-speech') {
+          sheet.querySelector('#v-hint').textContent = 'Speech recognition stopped. Tap in the box and use the microphone key on your keyboard instead.';
+        }
+      };
+      try {
+        rec.start();
+        mic.setAttribute('aria-pressed', 'true');
+        mic.querySelector('span').textContent = 'Listening… tap to stop';
+      } catch (e) { setIdle(); }
+    });
+  }
+
+  sheet.querySelector('#v-go').addEventListener('click', () => {
+    stopListening();
+    const said = text.value.trim();
+    if (!said) { toast('Say or type what you ate first.'); return; }
+    runVoice(said);
+  });
+}
+
+async function resolveVoiceItem(parsed) {
+  const local = rankMatches(Object.values(S.foods), parsed.name).filter((f) => matchesAll(f, parsed.name));
+  let candidates = local.slice(0, 2);
+  if (navigator.onLine) {
+    try {
+      const remote = await searchUSDA(parsed.name, S.settings.usdaKey);
+      const seen = new Set(candidates.map((f) => f.id));
+      candidates = candidates.concat(rankMatches(remote, parsed.name).filter((f) => !seen.has(f.id))).slice(0, 8);
+    } catch (e) {
+      if (!candidates.length) return { parsed, status: 'error', error: e.message };
+    }
+  }
+  if (!candidates.length) return { parsed, status: 'none' };
+  return setVoiceFood({ parsed, candidates, status: 'ok' }, candidates[0]);
+}
+
+async function setVoiceFood(item, food) {
+  const full = await ensurePortions(food);
+  const units = unitsFor(full);
+  const amt = resolveAmount(units, item.parsed);
+  return { ...item, food: full, units, unitIdx: amt.unitIdx, qty: amt.qty, estimated: amt.estimated };
+}
+
+async function runVoice(text) {
+  const parsed = parseFoodText(text);
+  if (!parsed.length) { toast("I couldn't pick out any foods. Try naming each one."); return; }
+  openSheet(`<h2>Finding ${parsed.length} ${parsed.length === 1 ? 'food' : 'foods'}…</h2><div class="empty"><div class="spinner" aria-label="Searching"></div></div>`, 'Finding foods');
+  const items = await Promise.all(parsed.map(resolveVoiceItem));
+  if (!sheetRoot.firstChild) return;
+  openVoiceReview(items, text);
+}
+
+function prettyRaw(s) {
+  return String(s).replace(/\b0\.5\b/g, '½').replace(/\b0\.25\b/g, '¼').replace(/\b0\.75\b/g, '¾').replace(/\b(\d+)\.5\b/g, '$1½');
+}
+
+function voiceRow(item, i) {
+  if (item.status !== 'ok') {
+    return `<div class="card vrow" data-i="${i}">
+      <div class="row between"><b class="grow">No match for “${esc(prettyRaw(item.parsed.raw))}”</b>
+        <button class="icon-btn plain" data-v-remove="${i}" aria-label="Remove">${I.close}</button></div>
+      <p class="small muted">${esc(item.error || 'Try different words, or search for it yourself.')}</p>
+      <button class="btn ghost" data-v-search="${i}" style="min-height:40px;font-size:14px">Search “${esc(item.parsed.name)}”</button>
+    </div>`;
+  }
+  const n = nutritionFor(item.food, item.qty, item.units[item.unitIdx]);
+  return `<div class="card vrow" data-i="${i}">
+    <div class="row" style="gap:8px">
+      <span class="field outline grow" style="min-height:44px"><span class="sr">Food</span>
+        <select data-v-food="${i}" style="font-weight:600">${item.candidates.map((f, j) => `<option value="${j}" ${f.id === item.food.id ? 'selected' : ''}>${esc(f.name)}${f.brand ? ' – ' + esc(f.brand) : ''}</option>`).join('')}</select>
+      </span>
+      <button class="icon-btn plain" data-v-remove="${i}" aria-label="Remove ${esc(item.food.name)}">${I.close}</button>
+    </div>
+    <p class="small muted">You said “${esc(prettyRaw(item.parsed.raw))}”${item.estimated ? ' · amount estimated, please check' : ''}</p>
+    <div class="row" style="gap:8px">
+      <span class="field outline" style="width:84px;min-height:44px"><span class="sr">Amount</span><input data-v-qty="${i}" type="number" inputmode="decimal" min="0" step="any" value="${esc(item.qty)}"></span>
+      <span class="field outline grow" style="min-height:44px"><span class="sr">Unit</span><select data-v-unit="${i}">${item.units.map((u, j) => `<option value="${j}" ${j === item.unitIdx ? 'selected' : ''}>${esc(u.label)}</option>`).join('')}</select></span>
+      <b class="nowrap" data-v-cal="${i}" style="min-width:64px;text-align:right">${fmt(n.kcal)} cal</b>
+    </div>
+  </div>`;
+}
+
+function openVoiceReview(items, text) {
+  let meal = ui.meal;
+  const sheet = openSheet(`
+    <h2>Check your foods</h2>
+    <p class="src">Fix any amount or food match, then add them all.</p>
+    <div id="vr-list" style="display:flex;flex-direction:column;gap:10px"></div>
+    <div class="card pad row between"><b>Total</b><b id="vr-total"></b></div>
+    ${mealSeg(meal)}
+    <label class="row" style="gap:10px;min-height:44px;font-size:15px;font-weight:600"><input type="checkbox" id="vr-save" style="width:22px;height:22px;accent-color:var(--accent)"> Also save as a meal for next time</label>
+    <label class="stack" id="vr-name-wrap" hidden>Meal name
+      <span class="field outline"><input id="vr-name" maxlength="60" placeholder="e.g. My usual salad"></span>
+    </label>
+    <button class="btn block" id="vr-add"></button>
+    <button class="btn ghost block" id="vr-edit">Change what I said</button>
+  `, 'Check your foods');
+
+  const list = sheet.querySelector('#vr-list');
+  const addBtn = sheet.querySelector('#vr-add');
+  const nameWrap = sheet.querySelector('#vr-name-wrap');
+  const nameInput = sheet.querySelector('#vr-name');
+  const saveBox = sheet.querySelector('#vr-save');
+
+  const okItems = () => items.filter((it) => it && it.status === 'ok' && Number(it.qty) > 0);
+  function totals() {
+    return okItems().reduce((t, it) => {
+      const n = nutritionFor(it.food, it.qty, it.units[it.unitIdx]);
+      return { kcal: t.kcal + n.kcal, protein: t.protein + n.protein, carbs: t.carbs + n.carbs, fat: t.fat + n.fat };
+    }, { kcal: 0, protein: 0, carbs: 0, fat: 0 });
+  }
+  function refreshTotals() {
+    const t = totals();
+    const count = okItems().length;
+    sheet.querySelector('#vr-total').textContent = `${fmt(t.kcal)} cal`;
+    addBtn.textContent = count ? `Add ${count} ${count === 1 ? 'item' : 'items'} to ${meal}` : 'Nothing to add';
+    addBtn.disabled = !count;
+  }
+  function renderList() {
+    list.innerHTML = items.map((it, i) => (it ? voiceRow(it, i) : '')).join('') ||
+      '<div class="card empty">Nothing left. Tap “Change what I said” to try again.</div>';
+    refreshTotals();
+  }
+  renderList();
+
+  list.addEventListener('input', (e) => {
+    const i = e.target.dataset.vQty;
+    if (i === undefined) return;
+    const it = items[Number(i)];
+    it.qty = Number(e.target.value);
+    const n = nutritionFor(it.food, it.qty, it.units[it.unitIdx]);
+    list.querySelector(`[data-v-cal="${i}"]`).textContent = `${fmt(n.kcal)} cal`;
+    refreshTotals();
+  });
+  list.addEventListener('change', async (e) => {
+    const t = e.target;
+    if (t.dataset.vUnit !== undefined) {
+      const it = items[Number(t.dataset.vUnit)];
+      const prev = it.units[it.unitIdx];
+      it.unitIdx = Number(t.value);
+      const u = it.units[it.unitIdx];
+      if (u.kind === 'grams' && prev.kind !== 'grams') it.qty = Math.round((prev.grams || 100) * (Number(it.qty) || 1));
+      else if (u.kind !== 'grams' && prev.kind === 'grams') it.qty = 1;
+      renderList();
+    } else if (t.dataset.vFood !== undefined) {
+      const i = Number(t.dataset.vFood);
+      const it = items[i];
+      const food = it.candidates[Number(t.value)];
+      t.disabled = true;
+      items[i] = await setVoiceFood(it, food);
+      renderList();
+    }
+  });
+  list.addEventListener('click', (e) => {
+    const rm = e.target.closest('[data-v-remove]');
+    if (rm) { items[Number(rm.dataset.vRemove)] = null; renderList(); return; }
+    const se = e.target.closest('[data-v-search]');
+    if (se) {
+      const it = items[Number(se.dataset.vSearch)];
+      closeSheet();
+      ui.q = it.parsed.name;
+      go('#/add');
+      const q = document.getElementById('q');
+      if (q) { q.value = ui.q; runRemoteSearch(); }
+    }
+  });
+  bindMealSeg(sheet, (m) => { meal = m; ui.meal = m; refreshTotals(); });
+  saveBox.addEventListener('change', () => { nameWrap.hidden = !saveBox.checked; if (saveBox.checked) nameInput.focus(); });
+  sheet.querySelector('#vr-edit').addEventListener('click', () => openVoice(text));
+
+  addBtn.addEventListener('click', () => {
+    const chosen = okItems();
+    if (!chosen.length) return;
+    if (saveBox.checked) {
+      const name = nameInput.value.trim();
+      if (!name) { toast('Give the meal a name, or untick “save as a meal”.'); nameInput.focus(); return; }
+      const t = totals();
+      const id = 'meal:' + uid();
+      S.foods[id] = {
+        id, name, brand: '', source: 'meal', per100: null, measures: [],
+        perServing: { label: '1 meal', kcal: Math.round(t.kcal), protein: Math.round(t.protein * 10) / 10, carbs: Math.round(t.carbs * 10) / 10, fat: Math.round(t.fat * 10) / 10 },
+        ingredients: chosen.map((it) => `${describeAmount(Number(it.qty), it.units[it.unitIdx])} ${it.food.name}`),
+        uses: 0, lastUsed: Date.now()
+      };
+    }
+    const entries = chosen.map((it) => {
+      const unit = it.units[it.unitIdx];
+      const q = Number(it.qty);
+      rememberFood(it.food, q, unit);
+      return {
+        name: it.food.name, brand: it.food.brand || '', detail: describeAmount(q, unit),
+        ...nutritionFor(it.food, q, unit), foodId: it.food.id, qty: q, unitLabel: unit.label
+      };
+    });
+    ui.meal = meal;
+    addEntries(entries, saveBox.checked ? `Saved “${nameInput.value.trim()}” · ` : '');
+  });
+}
+
+function addEntries(list, prefix = '') {
+  const day = (S.days[ui.date] = S.days[ui.date] || []);
+  let total = 0;
+  for (const e of list) {
+    day.push({ id: uid(), meal: ui.meal, at: Date.now(), ...e });
+    total += e.kcal || 0;
+  }
+  persist();
+  closeSheet();
+  ui.q = '';
+  ui.remote = { q: '', loading: false, error: '', items: [] };
+  toast(`${prefix}Added ${list.length} ${list.length === 1 ? 'item' : 'items'} · ${fmt(total)} cal`);
+  go('#/today');
 }
 
 function openQuickEdit(entry) {
@@ -935,9 +1239,10 @@ const actions = {
     ui.meal = el.dataset.meal;
     view.querySelectorAll('[data-action="meal"]').forEach((b) => b.setAttribute('aria-pressed', String(b === el)));
   },
-  pick: (el) => { const f = ui.pool[el.dataset.id] || S.foods[el.dataset.id]; if (f) openServing(f); },
+  pick: (el) => { const f = ui.pool[el.dataset.id] || S.foods[el.dataset.id]; if (f) pickFood(f); },
   custom: () => openCustom({ name: ui.q.trim() }),
   scan: () => openScanner(),
+  voice: () => openVoice(),
   range: (el) => { ui.range = el.dataset.range; render(); },
   'open-day': (el) => { ui.date = el.dataset.k; go('#/today'); },
   export: () => doExport(),

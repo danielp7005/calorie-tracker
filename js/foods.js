@@ -126,6 +126,44 @@ export async function searchUSDA(query, apiKey, signal) {
   return [...generic, ...branded];
 }
 
+// Search results often carry nutrition per 100 g only. The food's detail record has
+// real portions ("1 large", "1 cup, chopped"), so fetch those when a food is picked.
+function portionLabel(p) {
+  const desc = (p.portionDescription || '').trim();
+  if (desc && !/not specified/i.test(desc)) return desc;
+  const amount = Number(p.amount) || 1;
+  const amountStr = Number.isInteger(amount) ? String(amount) : String(round1(amount));
+  const unit = p.measureUnit && p.measureUnit.name && !/undetermined/i.test(p.measureUnit.name) ? p.measureUnit.name : '';
+  const mod = (p.modifier || '').trim();
+  const parts = [amountStr, unit, mod && !/^\d+$/.test(mod) ? mod : ''].filter(Boolean);
+  return parts.length > 1 ? parts.join(' ') : '';
+}
+
+export async function fetchUSDAPortions(food, apiKey, signal) {
+  const fdcId = String(food.id).replace(/^usda:/, '');
+  const params = new URLSearchParams({ api_key: (apiKey || '').trim() || 'DEMO_KEY' });
+  const res = await fetch(`https://api.nal.usda.gov/fdc/v1/food/${encodeURIComponent(fdcId)}?${params}`, { signal });
+  if (!res.ok) throw new Error('Could not load serving sizes (' + res.status + ').');
+  const data = await res.json();
+  const measures = [];
+  const seen = new Set();
+  const add = (label, grams) => {
+    if (!label || !(grams > 0)) return;
+    const full = `${label} (${Math.round(grams)} g)`;
+    if (seen.has(full)) return;
+    seen.add(full);
+    measures.push({ label: full, grams: Number(grams) });
+  };
+  for (const p of data.foodPortions || []) {
+    if (measures.length >= 6) break;
+    add(portionLabel(p), p.gramWeight);
+  }
+  if (!measures.length && data.servingSize && /^(g|grm)$/i.test(data.servingSizeUnit || '')) {
+    add(data.householdServingFullText || '1 serving', data.servingSize);
+  }
+  return measures;
+}
+
 // ---------- Open Food Facts (barcodes) ----------
 
 export async function lookupBarcode(code, signal) {
@@ -209,5 +247,7 @@ export function describeAmount(qty, unit) {
   if (unit.kind === 'serving') return q === 1 ? unit.label : `${qs} × ${unit.label}`;
   // measure labels look like "1 cup (240 g)" — show "2 × 1 cup" style when q ≠ 1
   const short = unit.label.replace(/\s*\([^)]*\)\s*$/, '');
-  return q === 1 ? short : `${qs} × ${short}`;
+  if (q === 1) return short;
+  if (/^1\s/.test(short)) return `${qs} ${short.slice(2)}`; // "1 large" → "2 large"
+  return `${qs} × ${short}`;
 }
