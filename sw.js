@@ -5,7 +5,7 @@
 // (bypassing the browser's short-term cache), so new versions show up on the next
 // launch. The saved copies are only used when you're offline or the network is very slow.
 // Keep VERSION in step with APP_VERSION in js/app.js.
-const VERSION = 'v1.2.0';
+const VERSION = 'v1.2.1';
 const CACHE = 'calorie-tracker-' + VERSION;
 const APP_FILES = [
   './',
