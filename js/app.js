@@ -7,7 +7,7 @@ import { parseFoodText, rankMatches, matchesAll, resolveAmount } from './voice.j
 
 // ---------------------------------------------------------------- setup
 
-const APP_VERSION = '1.2.2'; // keep in step with VERSION in sw.js
+const APP_VERSION = '1.3.0'; // keep in step with VERSION in sw.js
 let S = store.load();
 const MEALS = ['Breakfast', 'Lunch', 'Dinner', 'Snacks'];
 const view = document.getElementById('view');
@@ -398,20 +398,44 @@ function rememberFood(food, qty, unit) {
 // ---------------------------------------------------------------- sheets
 
 let sheetKeyHandler = null;
+let sheetViewportCleanup = null;
 function openSheet(html, label) {
   closeSheet();
   sheetRoot.innerHTML = `<div class="sheet-backdrop" data-backdrop>
-    <div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(label)}"><div class="grab" aria-hidden="true"></div>${html}</div>
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(label)}">
+      <button type="button" class="sheet-x" data-sheet-close aria-label="Close">${I.close}</button>
+      ${html}
+    </div>
   </div>`;
   const back = sheetRoot.querySelector('[data-backdrop]');
+  const sheet = sheetRoot.querySelector('.sheet');
   back.addEventListener('click', (e) => { if (e.target === back) closeSheet(); });
+  sheet.querySelector('[data-sheet-close]').addEventListener('click', closeSheet);
   sheetKeyHandler = (e) => { if (e.key === 'Escape') closeSheet(); };
   document.addEventListener('keydown', sheetKeyHandler);
   document.body.style.overflow = 'hidden';
-  return sheetRoot.querySelector('.sheet');
+
+  // Keep the panel inside the visible area, right above the on-screen keyboard.
+  const vv = window.visualViewport;
+  if (vv) {
+    const fit = () => {
+      back.style.top = vv.offsetTop + 'px';
+      back.style.height = vv.height + 'px';
+      back.style.bottom = 'auto';
+      const keyboardUp = window.innerHeight - vv.height > 120;
+      sheet.classList.toggle('kb', keyboardUp);
+      sheet.style.maxHeight = Math.round(vv.height - (keyboardUp ? 8 : vv.height * 0.08)) + 'px';
+    };
+    vv.addEventListener('resize', fit);
+    vv.addEventListener('scroll', fit);
+    fit();
+    sheetViewportCleanup = () => { vv.removeEventListener('resize', fit); vv.removeEventListener('scroll', fit); };
+  }
+  return sheet;
 }
 function closeSheet() {
   stopListening();
+  if (sheetViewportCleanup) { sheetViewportCleanup(); sheetViewportCleanup = null; }
   sheetRoot.innerHTML = '';
   document.body.style.overflow = '';
   if (sheetKeyHandler) document.removeEventListener('keydown', sheetKeyHandler);
@@ -463,7 +487,7 @@ function openServing(food, entry) {
       </label>
     </div>
     <div class="card nut4" id="s-nut" aria-live="polite"></div>
-    ${mealSeg(meal)}
+    ${entry ? mealSeg(meal) : ''}
     <button class="btn block" id="s-save">${entry ? 'Save changes' : 'Add to ' + esc(meal)}</button>
     ${entry ? `<button class="btn danger block" id="s-del">Delete entry</button>` : ''}
     ${!entry && S.foods[food.id] ? `<button class="link-btn" id="s-forget" style="color:var(--muted);font-size:14px;align-self:center">Remove from my foods</button>` : ''}
@@ -561,22 +585,19 @@ function stopListening() {
 
 function openVoice(prefill = '') {
   stopListening();
-  // iPhones often refuse in-page speech recognition in Home Screen apps, while the
-  // keyboard's own dictation key always works, so iPhones use the keyboard.
-  const SR = (!isIOS() || S.settings.tryMic) && !S.settings.micBlocked ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
+  // iPhones block in-page speech recognition in Home Screen apps, so they use the
+  // keyboard's own microphone key. Other devices also get a "Tap to speak" button.
+  const SR = !isIOS() && !S.settings.micBlocked ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
   const sheet = openSheet(`
     <h2>Say what you ate</h2>
-    <p class="src" style="line-height:1.5">Name each food with an amount. For example: “two cups of spinach, half an avocado, six cherry tomatoes, an ounce of feta and two tablespoons of olive oil.”</p>
     <label class="stack"><span class="sr">What you ate</span>
-      <textarea id="v-text" rows="5" placeholder="Tap the mic, or type here" style="width:100%;border:1.5px solid #D5DCD5;border-radius:14px;padding:12px 14px;font-size:16px;line-height:1.45;resize:vertical;background:#fff;outline-color:var(--accent)">${esc(prefill)}</textarea>
+      <textarea id="v-text" rows="4" placeholder="e.g. 2 cups spinach, half an avocado, 6 cherry tomatoes and 1 oz feta" style="width:100%;height:112px;border:2px solid var(--accent);border-radius:14px;padding:12px 14px;font-size:16px;line-height:1.45;resize:none;background:#fff;outline:none">${esc(prefill)}</textarea>
     </label>
-    ${SR ? `<button class="btn secondary block" id="v-mic" type="button" aria-pressed="false">${I.mic} <span>Tap to speak</span></button>` : ''}
-    <p class="note" id="v-hint">${SR ? 'If the mic button doesn’t work, tap in the box and use the microphone key on your keyboard.' : 'Tap the <b>microphone key</b> on your keyboard and speak. Tap it again when you’re done.'}</p>
-    ${mealSeg(ui.meal)}
     <button class="btn block" id="v-go">Find foods</button>
+    ${SR ? `<button class="btn secondary block" id="v-mic" type="button" aria-pressed="false">${I.mic} <span>Tap to speak</span></button>` : ''}
+    <p class="note" id="v-hint">${SR ? 'Or use the microphone key on your keyboard.' : 'Tap the mic key on your keyboard to speak. Name each food with an amount.'}</p>
   `, 'Say what you ate');
   const text = sheet.querySelector('#v-text');
-  bindMealSeg(sheet, (m) => { ui.meal = m; });
   // Focus right away (still inside the tap) so iPhone opens the keyboard with its mic key.
   if (!SR) { try { text.focus({ preventScroll: true }); } catch (e) { text.focus(); } if (prefill) text.setSelectionRange(text.value.length, text.value.length); }
 
@@ -607,10 +628,9 @@ function openVoice(prefill = '') {
           S.settings.micBlocked = true; persist(); // don't offer the button again on this device
           mic.remove();
           text.focus();
-          sheet.querySelector('#v-hint').textContent = `The mic button isn’t allowed here (${ev.error}). Use the microphone key on your keyboard instead.`;
-          if (S.settings.tryMic) toast(`Mic button blocked: ${ev.error}`);
+          sheet.querySelector('#v-hint').textContent = 'The mic button isn’t allowed here. Use the microphone key on your keyboard instead.';
         } else if (ev.error !== 'aborted' && ev.error !== 'no-speech') {
-          sheet.querySelector('#v-hint').textContent = `Speech recognition stopped (${ev.error}). Use the microphone key on your keyboard instead.`;
+          sheet.querySelector('#v-hint').textContent = 'Speech recognition stopped. Use the microphone key on your keyboard instead.';
         }
       };
       try {
@@ -694,11 +714,12 @@ function voiceRow(item, i) {
 function openVoiceReview(items, text) {
   let meal = ui.meal;
   const sheet = openSheet(`
-    <h2>Check your foods</h2>
-    <p class="src">Fix any amount or food match, then add them all.</p>
+    <div>
+      <h2>Check your foods</h2>
+      <p class="src">Adding to <b style="color:var(--ink)">${esc(meal)}</b> · fix anything that looks off</p>
+    </div>
     <div id="vr-list" style="display:flex;flex-direction:column;gap:10px"></div>
     <div class="card pad row between"><b>Total</b><b id="vr-total"></b></div>
-    ${mealSeg(meal)}
     <label class="row" style="gap:10px;min-height:44px;font-size:15px;font-weight:600"><input type="checkbox" id="vr-save" style="width:22px;height:22px;accent-color:var(--accent)"> Also save as a meal for next time</label>
     <label class="stack" id="vr-name-wrap" hidden>Meal name
       <span class="field outline"><input id="vr-name" maxlength="60" placeholder="e.g. My usual salad"></span>
@@ -775,7 +796,6 @@ function openVoiceReview(items, text) {
       if (q) { q.value = ui.q; runRemoteSearch(); }
     }
   });
-  bindMealSeg(sheet, (m) => { meal = m; ui.meal = m; refreshTotals(); });
   saveBox.addEventListener('change', () => { nameWrap.hidden = !saveBox.checked; if (saveBox.checked) nameInput.focus(); });
   sheet.querySelector('#vr-edit').addEventListener('click', () => openVoice(text));
 
@@ -1159,14 +1179,6 @@ function renderSettings() {
       <button class="btn ghost block" data-action="force-update">Check for updates</button>
     </section>
 
-    <h2 class="section-title">Voice</h2>
-    <section class="card pad" style="display:flex;flex-direction:column;gap:10px">
-      <label class="row between" style="min-height:44px;gap:12px;font-size:15px;font-weight:600">
-        <span>Show “Tap to speak” button</span>
-        <input type="checkbox" id="try-mic" ${(!isIOS() || S.settings.tryMic) && !S.settings.micBlocked ? 'checked' : ''} style="width:24px;height:24px;accent-color:var(--accent);flex-shrink:0">
-      </label>
-      <p class="small muted" style="line-height:1.5">${isIOS() ? 'Test switch. iPhones usually block in-app speech recognition in Home Screen apps; if it’s blocked, the button turns itself off and you can use the microphone key on your keyboard.' : 'Turn off if the button doesn’t work on this device; the keyboard’s microphone key always works.'}${S.settings.micBlocked ? ' <b style="color:var(--ink)">It was blocked last time it was tried.</b>' : ''}</p>
-    </section>
 
     <p class="note">Food data: USDA FoodData Central (public domain). Barcode data: Open Food Facts, under the Open Database License. Nutrition numbers are estimates.</p>
   `;
@@ -1180,12 +1192,6 @@ function bindSettings() {
     const g = S.settings.goals;
     document.getElementById('macro-kcal').textContent = `Your macro goals add up to about ${fmt(g.protein * 4 + g.carbs * 4 + g.fat * 9)} cal.`;
   }));
-  const tryMic = document.getElementById('try-mic');
-  tryMic.addEventListener('change', () => {
-    if (tryMic.checked) { S.settings.tryMic = true; S.settings.micBlocked = false; toast('Mic button on. Try it in “Say what you ate”.'); }
-    else { S.settings.tryMic = false; if (!isIOS()) S.settings.micBlocked = true; toast('Mic button off'); }
-    persist();
-  });
   const key = document.getElementById('usda-key');
   key.addEventListener('change', () => { S.settings.usdaKey = key.value.trim(); persist(); toast(S.settings.usdaKey ? 'USDA key saved' : 'USDA key removed'); });
   document.getElementById('import-file').addEventListener('change', async (e) => {
