@@ -1,7 +1,7 @@
 // Service worker: keeps the app itself available offline.
 // Your food log is NOT stored here — it lives in the browser's storage (see js/store.js).
 // Bump VERSION whenever you change any app file so phones pick up the update.
-const VERSION = 'v1.0.1';
+const VERSION = 'v1.0.2';
 const CACHE = 'calorie-tracker-' + VERSION;
 const APP_FILES = [
   './',
