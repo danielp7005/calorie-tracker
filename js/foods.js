@@ -73,8 +73,10 @@ function fromUSDA(item) {
   const unit = (item.servingSizeUnit || '').toLowerCase();
   if (item.servingSize && (unit === 'g' || unit === 'grm' || unit === 'ml' || unit === 'mlt')) {
     const grams = Number(item.servingSize);
-    const label = item.householdServingFullText
-      ? `${item.householdServingFullText} (${Math.round(grams)} ${unit.startsWith('m') ? 'ml' : 'g'})`
+    const hh = (item.householdServingFullText || '').trim();
+    const justWeight = /^[\d.\s]*(g|grm|gram|grams|ml|mlt|oz|onz)?$/i.test(hh);
+    const label = hh && !justWeight
+      ? `${hh} (${Math.round(grams)} ${unit.startsWith('m') ? 'ml' : 'g'})`
       : `1 serving (${Math.round(grams)} ${unit.startsWith('m') ? 'ml' : 'g'})`;
     measures.push({ label, grams });
   }
@@ -159,7 +161,8 @@ export async function fetchUSDAPortions(food, apiKey, signal) {
     add(portionLabel(p), p.gramWeight);
   }
   if (!measures.length && data.servingSize && /^(g|grm)$/i.test(data.servingSizeUnit || '')) {
-    add(data.householdServingFullText || '1 serving', data.servingSize);
+    const hh = (data.householdServingFullText || '').trim();
+    add(hh && !/^[\d.\s]*(g|grm|gram|grams|ml|mlt|oz|onz)?$/i.test(hh) ? hh : '1 serving', data.servingSize);
   }
   return measures;
 }

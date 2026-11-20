@@ -7,6 +7,7 @@ import { parseFoodText, rankMatches, matchesAll, resolveAmount } from './voice.j
 
 // ---------------------------------------------------------------- setup
 
+const APP_VERSION = '1.2.0'; // keep in step with VERSION in sw.js
 let S = store.load();
 const MEALS = ['Breakfast', 'Lunch', 'Dinner', 'Snacks'];
 const view = document.getElementById('view');
@@ -1145,6 +1146,12 @@ function renderSettings() {
       <button class="btn danger block" data-action="wipe">Erase all data</button>
     </section>
 
+    <h2 class="section-title">App</h2>
+    <section class="card pad" style="display:flex;flex-direction:column;gap:10px">
+      <p class="small muted">Version <b style="color:var(--ink)">${APP_VERSION}</b>. Updates install automatically when you open the app online.</p>
+      <button class="btn ghost block" data-action="force-update">Check for updates</button>
+    </section>
+
     <p class="note">Food data: USDA FoodData Central (public domain). Barcode data: Open Food Facts, under the Open Database License. Nutrition numbers are estimates.</p>
   `;
 }
@@ -1246,7 +1253,8 @@ const actions = {
   range: (el) => { ui.range = el.dataset.range; render(); },
   'open-day': (el) => { ui.date = el.dataset.k; go('#/today'); },
   export: () => doExport(),
-  wipe: () => confirmWipe()
+  wipe: () => confirmWipe(),
+  'force-update': () => forceUpdate()
 };
 
 document.addEventListener('click', (e) => {
@@ -1275,6 +1283,37 @@ document.addEventListener('visibilitychange', () => {
 
 render();
 store.requestPersistence();
-if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-  navigator.serviceWorker.register('sw.js').catch((e) => console.warn('Service worker not registered', e));
+// ---------------------------------------------------------------- updates
+
+// Clears the saved app files (never your food log) and reloads the newest version.
+async function forceUpdate() {
+  toast('Checking for updates…');
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+    if (window.caches) {
+      const keys = await caches.keys();
+      await Promise.all(keys.filter((k) => k.startsWith('calorie-tracker-')).map((k) => caches.delete(k)));
+    }
+  } catch (e) { console.warn(e); }
+  location.replace(location.pathname + '?v=' + Date.now() + '#/today');
 }
+
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+    // Look for a new version each time the app comes to the front.
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+  }).catch((e) => console.warn('Service worker not registered', e));
+  // When a new version takes over, reload once so it's used right away (not mid-task).
+  let reloading = false;
+  const hadController = !!navigator.serviceWorker.controller; // first install: nothing to swap
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloading || sheetRoot.firstChild || scanner) return;
+    reloading = true;
+    location.reload();
+  });
+}
+// Drop the one-time ?v= marker left by "Check for updates".
+if (location.search.includes('v=')) history.replaceState(null, '', location.pathname + location.hash);
