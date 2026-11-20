@@ -24,6 +24,10 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
+/* No double-tap zoom; text size stays put when the phone rotates. */
+html { touch-action: manipulation; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* iPhone zooms in on any text box or dropdown under 16px; keep them all at 16px or more. */
+input, select, textarea { font-size: max(16px, 1em); }
 body {
   background: var(--bg);
   color: var(--ink);
@@ -291,6 +295,6 @@ label.stack { display: flex; flex-direction: column; gap: 6px; font-size: 13px; 
 
 /* ---------- voice review ---------- */
 .vrow { padding: 12px 12px 12px 16px; display: flex; flex-direction: column; gap: 8px; }
-.vrow select { font-size: 15px; padding: 10px 0; text-overflow: ellipsis; }
+.vrow select { font-size: 16px; padding: 10px 0; text-overflow: ellipsis; }
 .vrow .field.outline { padding: 0 10px; }
 #v-mic[aria-pressed="true"] { background: var(--accent); color: #fff; }
