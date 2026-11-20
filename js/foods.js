@@ -98,18 +98,28 @@ function fromUSDA(item) {
 }
 
 export async function searchUSDA(query, apiKey, signal) {
+  // Keep the request to the documented basics (key, query, page size).
+  // Data types are filtered here instead of in the request.
   const params = new URLSearchParams({
-    api_key: apiKey || 'DEMO_KEY',
+    api_key: (apiKey || '').trim() || 'DEMO_KEY',
     query,
-    pageSize: '25',
-    dataType: 'Foundation,SR Legacy,Survey (FNDDS),Branded'
+    pageSize: '50'
   });
   const res = await fetch(`${USDA_URL}?${params}`, { signal });
   if (res.status === 429) throw new Error('Search limit reached. Add your free USDA key in Settings, or try again in an hour.');
-  if (res.status === 403) throw new Error('The USDA key was not accepted. Check it in Settings.');
-  if (!res.ok) throw new Error('Food search is unavailable right now (' + res.status + ').');
+  if (res.status === 403 || res.status === 401) throw new Error('The USDA key was not accepted. Check it in Settings.');
+  if (!res.ok) {
+    let detail = '';
+    try { detail = (await res.text()).slice(0, 120); } catch (e) { /* ignore */ }
+    throw new Error('Food search is unavailable right now (' + res.status + ').' + (detail ? ' ' + detail : ''));
+  }
   const data = await res.json();
-  const foods = (data.foods || []).map(fromUSDA).filter(Boolean);
+  const keep = new Set(['Foundation', 'SR Legacy', 'Survey (FNDDS)', 'Branded']);
+  const foods = (data.foods || [])
+    .filter((item) => !item.dataType || keep.has(item.dataType))
+    .map(fromUSDA)
+    .filter(Boolean)
+    .slice(0, 30);
   // Generic foods (banana, rice) before branded products
   const generic = foods.filter((f) => !f.branded);
   const branded = foods.filter((f) => f.branded);
