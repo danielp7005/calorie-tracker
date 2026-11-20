@@ -7,7 +7,7 @@ import { parseFoodText, rankMatches, matchesAll, resolveAmount } from './voice.j
 
 // ---------------------------------------------------------------- setup
 
-const APP_VERSION = '1.2.1'; // keep in step with VERSION in sw.js
+const APP_VERSION = '1.2.2'; // keep in step with VERSION in sw.js
 let S = store.load();
 const MEALS = ['Breakfast', 'Lunch', 'Dinner', 'Snacks'];
 const view = document.getElementById('view');
@@ -563,7 +563,7 @@ function openVoice(prefill = '') {
   stopListening();
   // iPhones often refuse in-page speech recognition in Home Screen apps, while the
   // keyboard's own dictation key always works, so iPhones use the keyboard.
-  const SR = !isIOS() && !S.settings.micBlocked ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
+  const SR = (!isIOS() || S.settings.tryMic) && !S.settings.micBlocked ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
   const sheet = openSheet(`
     <h2>Say what you ate</h2>
     <p class="src" style="line-height:1.5">Name each food with an amount. For example: “two cups of spinach, half an avocado, six cherry tomatoes, an ounce of feta and two tablespoons of olive oil.”</p>
@@ -607,9 +607,10 @@ function openVoice(prefill = '') {
           S.settings.micBlocked = true; persist(); // don't offer the button again on this device
           mic.remove();
           text.focus();
-          sheet.querySelector('#v-hint').textContent = 'Microphone access is off for this app. Tap in the box and use the microphone key on your keyboard instead.';
+          sheet.querySelector('#v-hint').textContent = `The mic button isn’t allowed here (${ev.error}). Use the microphone key on your keyboard instead.`;
+          if (S.settings.tryMic) toast(`Mic button blocked: ${ev.error}`);
         } else if (ev.error !== 'aborted' && ev.error !== 'no-speech') {
-          sheet.querySelector('#v-hint').textContent = 'Speech recognition stopped. Tap in the box and use the microphone key on your keyboard instead.';
+          sheet.querySelector('#v-hint').textContent = `Speech recognition stopped (${ev.error}). Use the microphone key on your keyboard instead.`;
         }
       };
       try {
@@ -1158,6 +1159,15 @@ function renderSettings() {
       <button class="btn ghost block" data-action="force-update">Check for updates</button>
     </section>
 
+    <h2 class="section-title">Voice</h2>
+    <section class="card pad" style="display:flex;flex-direction:column;gap:10px">
+      <label class="row between" style="min-height:44px;gap:12px;font-size:15px;font-weight:600">
+        <span>Show “Tap to speak” button</span>
+        <input type="checkbox" id="try-mic" ${(!isIOS() || S.settings.tryMic) && !S.settings.micBlocked ? 'checked' : ''} style="width:24px;height:24px;accent-color:var(--accent);flex-shrink:0">
+      </label>
+      <p class="small muted" style="line-height:1.5">${isIOS() ? 'Test switch. iPhones usually block in-app speech recognition in Home Screen apps; if it’s blocked, the button turns itself off and you can use the microphone key on your keyboard.' : 'Turn off if the button doesn’t work on this device; the keyboard’s microphone key always works.'}${S.settings.micBlocked ? ' <b style="color:var(--ink)">It was blocked last time it was tried.</b>' : ''}</p>
+    </section>
+
     <p class="note">Food data: USDA FoodData Central (public domain). Barcode data: Open Food Facts, under the Open Database License. Nutrition numbers are estimates.</p>
   `;
 }
@@ -1170,6 +1180,12 @@ function bindSettings() {
     const g = S.settings.goals;
     document.getElementById('macro-kcal').textContent = `Your macro goals add up to about ${fmt(g.protein * 4 + g.carbs * 4 + g.fat * 9)} cal.`;
   }));
+  const tryMic = document.getElementById('try-mic');
+  tryMic.addEventListener('change', () => {
+    if (tryMic.checked) { S.settings.tryMic = true; S.settings.micBlocked = false; toast('Mic button on. Try it in “Say what you ate”.'); }
+    else { S.settings.tryMic = false; if (!isIOS()) S.settings.micBlocked = true; toast('Mic button off'); }
+    persist();
+  });
   const key = document.getElementById('usda-key');
   key.addEventListener('change', () => { S.settings.usdaKey = key.value.trim(); persist(); toast(S.settings.usdaKey ? 'USDA key saved' : 'USDA key removed'); });
   document.getElementById('import-file').addEventListener('change', async (e) => {
