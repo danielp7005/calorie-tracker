@@ -239,14 +239,22 @@ label.stack { display: flex; flex-direction: column; gap: 6px; font-size: 13px; 
   animation: fade 0.15s ease;
 }
 .sheet {
-  width: 100%; max-width: 560px; max-height: 92vh; overflow-y: auto;
+  position: relative;
+  width: 100%; max-width: 560px; max-height: 92vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
   background: var(--bg); border-radius: 24px 24px 0 0;
-  padding: 10px 20px calc(var(--safe-b) + 20px);
+  padding: 20px 20px calc(var(--safe-b) + 20px);
   display: flex; flex-direction: column; gap: 14px;
   animation: up 0.2s ease;
 }
-.sheet .grab { width: 40px; height: 5px; border-radius: 3px; background: #C9D2CA; margin: 0 auto 4px; }
-.sheet h2 { font-size: 22px; font-weight: 800; letter-spacing: -0.01em; }
+.sheet.kb { padding-bottom: 14px; }
+.sheet-x {
+  position: absolute; top: 14px; right: 14px; z-index: 2;
+  width: 44px; height: 44px; border-radius: 22px; border: none;
+  background: var(--seg); color: var(--ink);
+  display: flex; align-items: center; justify-content: center;
+}
+.sheet-x svg { width: 18px; height: 18px; stroke-width: 2.5; }
+.sheet h2 { font-size: 22px; font-weight: 800; letter-spacing: -0.01em; padding-right: 52px; min-height: 30px; line-height: 1.25; }
 .sheet .src { font-size: 13px; color: var(--muted); }
 .nut4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; text-align: center; padding: 14px 10px; }
 .nut4 b { display: block; font-size: 20px; }
