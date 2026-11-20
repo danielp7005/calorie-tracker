@@ -7,7 +7,7 @@ import { parseFoodText, rankMatches, matchesAll, resolveAmount } from './voice.j
 
 // ---------------------------------------------------------------- setup
 
-const APP_VERSION = '1.2.0'; // keep in step with VERSION in sw.js
+const APP_VERSION = '1.2.1'; // keep in step with VERSION in sw.js
 let S = store.load();
 const MEALS = ['Breakfast', 'Lunch', 'Dinner', 'Snacks'];
 const view = document.getElementById('view');
@@ -561,7 +561,9 @@ function stopListening() {
 
 function openVoice(prefill = '') {
   stopListening();
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  // iPhones often refuse in-page speech recognition in Home Screen apps, while the
+  // keyboard's own dictation key always works, so iPhones use the keyboard.
+  const SR = !isIOS() && !S.settings.micBlocked ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
   const sheet = openSheet(`
     <h2>Say what you ate</h2>
     <p class="src" style="line-height:1.5">Name each food with an amount. For example: “two cups of spinach, half an avocado, six cherry tomatoes, an ounce of feta and two tablespoons of olive oil.”</p>
@@ -569,13 +571,14 @@ function openVoice(prefill = '') {
       <textarea id="v-text" rows="5" placeholder="Tap the mic, or type here" style="width:100%;border:1.5px solid #D5DCD5;border-radius:14px;padding:12px 14px;font-size:16px;line-height:1.45;resize:vertical;background:#fff;outline-color:var(--accent)">${esc(prefill)}</textarea>
     </label>
     ${SR ? `<button class="btn secondary block" id="v-mic" type="button" aria-pressed="false">${I.mic} <span>Tap to speak</span></button>` : ''}
-    <p class="note" id="v-hint">${SR ? 'If the mic button doesn’t work, tap in the box and use the microphone key on your keyboard.' : 'Tap in the box and use the microphone key on your keyboard to dictate.'}</p>
+    <p class="note" id="v-hint">${SR ? 'If the mic button doesn’t work, tap in the box and use the microphone key on your keyboard.' : 'Tap the <b>microphone key</b> on your keyboard and speak. Tap it again when you’re done.'}</p>
     ${mealSeg(ui.meal)}
     <button class="btn block" id="v-go">Find foods</button>
   `, 'Say what you ate');
   const text = sheet.querySelector('#v-text');
   bindMealSeg(sheet, (m) => { ui.meal = m; });
-  if (!prefill && !SR) setTimeout(() => text.focus(), 250);
+  // Focus right away (still inside the tap) so iPhone opens the keyboard with its mic key.
+  if (!SR) { try { text.focus({ preventScroll: true }); } catch (e) { text.focus(); } if (prefill) text.setSelectionRange(text.value.length, text.value.length); }
 
   const mic = sheet.querySelector('#v-mic');
   if (mic && SR) {
@@ -601,6 +604,9 @@ function openVoice(prefill = '') {
       rec.onerror = (ev) => {
         setIdle();
         if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+          S.settings.micBlocked = true; persist(); // don't offer the button again on this device
+          mic.remove();
+          text.focus();
           sheet.querySelector('#v-hint').textContent = 'Microphone access is off for this app. Tap in the box and use the microphone key on your keyboard instead.';
         } else if (ev.error !== 'aborted' && ev.error !== 'no-speech') {
           sheet.querySelector('#v-hint').textContent = 'Speech recognition stopped. Tap in the box and use the microphone key on your keyboard instead.';
