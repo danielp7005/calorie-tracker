@@ -71,16 +71,22 @@ export async function requestPersistence() {
   return false;
 }
 
+// Backups never include the USDA key, so a backup file is safe to share or store anywhere.
 export function exportJSON(state) {
-  return JSON.stringify({ app: 'calorie-tracker', exportedAt: new Date().toISOString(), ...state }, null, 2);
+  const settings = { ...state.settings };
+  delete settings.usdaKey;
+  return JSON.stringify({ app: 'calorie-tracker', exportedAt: new Date().toISOString(), ...state, settings }, null, 2);
 }
 
-export function importJSON(text) {
+// Restoring keeps the key already saved on this phone.
+export function importJSON(text, currentKey = '') {
   const parsed = JSON.parse(text);
   if (!parsed || typeof parsed !== 'object' || (!parsed.days && !parsed.foods)) {
     throw new Error('This file does not look like a Calorie Tracker backup.');
   }
-  return normalize(parsed);
+  const next = normalize(parsed);
+  next.settings.usdaKey = currentKey || '';
+  return next;
 }
 
 export function wipe() {

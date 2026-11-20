@@ -860,7 +860,7 @@ function bindSettings() {
     e.target.value = '';
     if (!file) return;
     try {
-      const next = store.importJSON(await file.text());
+      const next = store.importJSON(await file.text(), S.settings.usdaKey);
       const days = Object.keys(next.days).length;
       const sheet = openSheet(`
         <h2>Restore this backup?</h2>
