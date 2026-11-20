@@ -32,7 +32,7 @@ body {
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior-y: none;
 }
-button, input, select { font: inherit; color: inherit; }
+button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 a { color: var(--accent); text-decoration: none; }
 h1, h2, h3, p { margin: 0; }
@@ -280,3 +280,9 @@ label.stack { display: flex; flex-direction: column; gap: 6px; font-size: 13px; 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------- voice review ---------- */
+.vrow { padding: 12px 12px 12px 16px; display: flex; flex-direction: column; gap: 8px; }
+.vrow select { font-size: 15px; padding: 10px 0; text-overflow: ellipsis; }
+.vrow .field.outline { padding: 0 10px; }
+#v-mic[aria-pressed="true"] { background: var(--accent); color: #fff; }
