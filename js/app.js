@@ -7,7 +7,7 @@ import { parseFoodText, rankMatches, matchesAll, resolveAmount } from './voice.j
 
 // ---------------------------------------------------------------- setup
 
-const APP_VERSION = '1.3.1'; // keep in step with VERSION in sw.js
+const APP_VERSION = '1.3.2'; // keep in step with VERSION in sw.js
 let S = store.load();
 const MEALS = ['Breakfast', 'Lunch', 'Dinner', 'Snacks'];
 const view = document.getElementById('view');
@@ -322,7 +322,6 @@ function renderResults() {
   if (!q) {
     const recents = recentFoods(S.foods);
     box.innerHTML = `
-      <button class="btn block" data-action="voice" style="min-height:56px">${I.mic} Say what you ate</button>
       <section class="card pad" style="display:flex;flex-direction:column;gap:12px" aria-label="Quick add">
         <h2 style="font-size:15px;font-weight:700">Quick add calories</h2>
         <form class="row" style="gap:10px" data-form="quick">
